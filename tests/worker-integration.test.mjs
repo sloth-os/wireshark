@@ -120,7 +120,11 @@ function startWorker() {
 function rpc(w, type, payload, wantType, seq) {
   return new Promise((resolve, reject) => {
     const onMessage = (msg) => {
-      if (msg.type === wantType && (seq == null || msg.seq === seq)) {
+      if (msg.type === wantType) {
+        // Replies MUST echo the caller's seq — the page client settles
+        // promises by (type, seq); a reply without seq hangs the UI on
+        // "Engine: loading…" forever. Match strictly, like the real client.
+        if (msg.seq !== (seq == null ? 1 : seq)) return;
         w.off('message', onMessage);
         resolve(msg);
       }
@@ -129,9 +133,30 @@ function rpc(w, type, payload, wantType, seq) {
     w.postMessage(Object.assign({ type, seq: seq || 1 }, payload || {}));
     setTimeout(() => {
       w.off('message', onMessage);
-      reject(new Error('timeout waiting for ' + wantType));
+      reject(new Error('timeout waiting for ' + wantType + ' (seq echoed?)'));
     }, 120000);
   });
+}
+
+/* The page client (src/engine-client.js) drives the worker exactly as the
+ * browser does: postMessage on a Worker object, settling promises by
+ * (call type, seq). This exercises the full shipped protocol — including the
+ * reply-type aliasing ('engine-init' is answered by 'engine-ready') and File
+ * cloning — so a client/worker mismatch can never reach production again. */
+async function startClientPair() {
+  const w = startWorker();
+  const adapter = {
+    postMessage: (msg) => w.postMessage(msg),
+    terminate: () => w.terminate(),
+    onmessage: null,
+    onerror: null
+  };
+  w.on('message', (msg) => { if (adapter.onmessage) adapter.onmessage({ data: msg }); });
+  w.on('error', (err) => { if (adapter.onerror) adapter.onerror(err); });
+  globalThis.Worker = function () { return adapter; }; /* `new` returns it */
+  const { createEngineClient } = await import('../src/engine-client.js');
+  const client = createEngineClient('unused://engine-worker.js');
+  return { worker: w, client };
 }
 
 test('engine worker: boot, dissect, RPC shapes', { skip: !HAS_ENGINE }, async () => {
@@ -226,5 +251,32 @@ test('engine worker reports load errors gracefully', { skip: !HAS_ENGINE }, asyn
     assert.equal(frames.frames.length, 0);
   } finally {
     await w.terminate();
+  }
+});
+
+/* Full shipped protocol: the page client boots the engine and loads a
+ * capture through its real promise API. Guards the seq-echoing contract and
+ * the reply-type aliasing end to end (a seq-less or mis-aliased reply makes
+ * these calls hang, which is exactly the "Engine: loading…" bug). */
+test('engine-client: init + load through the real RPC layer', { skip: !HAS_ENGINE }, async () => {
+  const { worker, client } = await startClientPair();
+  try {
+    const ready = await client.init();
+    assert.match(ready.version, /^4\./, 'client.init() resolves with the version');
+    assert.ok(Array.isArray(ready.columns) && ready.columns.length >= 6, 'columns via client');
+
+    const file = new File([makePcap()], 'client.pcap', { type: 'application/vnd.tcpdump.pcap' });
+    const loaded = await client.load(file);
+    assert.equal(loaded.type, 'loaded');
+    assert.equal(loaded.summary.packet_count, 4);
+
+    const frames = await client.frames('', 0, 10);
+    assert.equal(frames.matched, 4);
+    const frame = await client.frame(1);
+    assert.ok(frame.frame.tree.length >= 4, 'tree via client');
+    const check = await client.checkFilter('udp');
+    assert.equal(check.ok, true);
+  } finally {
+    await worker.terminate();
   }
 });

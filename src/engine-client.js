@@ -20,6 +20,20 @@ export function createEngineClient(workerUrl) {
   let onLoaded = null;     /* ({name, summary, ms}) when a capture opens */
   let onLoadError = null;
 
+  /* Reply type -> the call type that registered the pending promise. The
+   * worker answers some RPCs under a different name than the request
+   * ('engine-init' is answered by 'engine-ready'/'engine-error', 'load' by
+   * 'loaded'/'load-error', 'check-filter' by 'filter-check', ...). Every
+   * reply must map back to its call, or the promise never settles. */
+  const CALL_OF_REPLY = {
+    'engine-ready': 'engine-init',
+    'engine-error': 'engine-init',
+    'loaded': 'load',
+    'load-error': 'load',
+    'filter-check': 'check-filter',
+    'filter-complete': 'complete-filter'
+  };
+
   function settle(type, msg) {
     const p = pending.get(msg.seq);
     if (!p || p.type !== type) return;
@@ -39,26 +53,33 @@ export function createEngineClient(workerUrl) {
       case 'engine-log':
         if (onEngineLog) onEngineLog(msg.level, msg.text);
         break;
-      case 'engine-ready':
-      case 'engine-error':
-        settle('engine-ready', msg);
-        break;
       case 'load-error':
         if (onLoadError) onLoadError(msg);
-        settle('loaded', msg);
+        settle('load', msg);
         break;
       case 'loaded':
         if (onLoaded) onLoaded(msg);
-        settle('loaded', msg);
+        settle('load', msg);
         break;
       default:
-        settle(msg.type, msg);
+        settle(CALL_OF_REPLY[msg.type] || msg.type, msg);
     }
   };
 
   worker.onerror = function (err) {
-    /* A classic-worker script error is fatal for the engine; surface it. */
-    if (onEngineLog) onEngineLog('error', 'worker: ' + (err.message || 'unknown worker error'));
+    /* A classic-worker script error is fatal for the engine; surface it and
+     * fail every pending call so the UI reports the failure instead of
+     * hanging on "Engine: loading…" forever. */
+    const text = 'worker: ' + (err.message || 'unknown worker error');
+    if (onEngineLog) onEngineLog('error', text);
+    const doomed = [...pending.entries()];
+    pending.clear();
+    for (const [id, p] of doomed) {
+      /* Resolve (never hang) with the error-shaped reply the caller expects. */
+      const errorType = p.type === 'engine-init' ? 'engine-error'
+        : p.type === 'load' ? 'load-error' : 'error';
+      p.resolve({ type: errorType, seq: id, error: text });
+    }
   };
 
   function call(type, payload) {

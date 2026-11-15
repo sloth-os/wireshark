@@ -137,7 +137,7 @@ let fileName = null;
 let lastSummary = null;
 let loadSeq = 0;            /* monotonic token: stale replies are dropped */
 
-async function initEngine(onProgress) {
+async function initEngine(seq, onProgress) {
   const base = new URL('../wasm/engine/', self.location);
 
   const [wasmGz, dataGz] = await Promise.all([
@@ -170,6 +170,7 @@ async function initEngine(onProgress) {
 
   send({
     type: 'engine-ready',
+    seq: seq,
     version: lib.wiresharkVersion(),
     columns: vec2array(lib.getColumns())
   });
@@ -184,11 +185,18 @@ function destroySession() {
   }
 }
 
-/* Read the uploaded File into the emscripten FS and dissect it. */
-async function loadCapture(file) {
+/* Read the uploaded File into the emscripten FS and dissect it. replySeq is
+ * the client's call seq: every reply (loaded / load-error, including the
+ * superseded case) carries it so the caller's promise always settles. */
+async function loadCapture(file, replySeq) {
   const seq = ++loadSeq;
   const bytes = new Uint8Array(await file.arrayBuffer());
-  if (seq !== loadSeq) return; /* superseded by a newer load */
+  if (seq !== loadSeq) {
+    /* Superseded by a newer load — settle this call anyway; the newer one
+     * delivers its own reply. */
+    send({ type: 'load-error', seq: replySeq, error: 'superseded by a newer load' });
+    return;
+  }
 
   const uploadDir = lib.getUploadDirectory();
   /* lib.FS.writeFile only accepts paths without traversal; the upload dir
@@ -202,11 +210,14 @@ async function loadCapture(file) {
   const response = session.load();
   const elapsed = Math.round(performance.now() - t0);
 
-  if (seq !== loadSeq) return;
+  if (seq !== loadSeq) {
+    send({ type: 'load-error', seq: replySeq, error: 'superseded by a newer load' });
+    return;
+  }
 
   if (response.code !== 0) {
     destroySession();
-    send({ type: 'load-error', seq: seq, error: response.error || 'the capture could not be opened' });
+    send({ type: 'load-error', seq: replySeq, error: response.error || 'the capture could not be opened' });
     return;
   }
 
@@ -221,7 +232,7 @@ async function loadCapture(file) {
     stop_time: response.summary.stop_time,
     elapsed_time: response.summary.elapsed_time
   };
-  send({ type: 'loaded', seq: seq, name: name, summary: lastSummary, ms: elapsed });
+  send({ type: 'loaded', seq: replySeq, name: name, summary: lastSummary, ms: elapsed });
 }
 
 /* --------------------------------------------------------------- RPCs */
@@ -229,20 +240,20 @@ async function loadCapture(file) {
 const handlers = {
   'engine-init': async function (msg) {
     try {
-      await initEngine(function (kind, loaded, total) {
+      await initEngine(msg.seq, function (kind, loaded, total) {
         send({ type: 'engine-progress', kind: kind, loaded: loaded, total: total });
       });
     } catch (err) {
-      send({ type: 'engine-error', error: String(err && err.message || err) });
+      send({ type: 'engine-error', seq: msg.seq, error: String(err && err.message || err) });
     }
   },
 
   'load': async function (msg) {
-    if (!lib) return send({ type: 'load-error', seq: loadSeq, error: 'engine not ready' });
+    if (!lib) return send({ type: 'load-error', seq: msg.seq, error: 'engine not ready' });
     try {
-      await loadCapture(msg.file);
+      await loadCapture(msg.file, msg.seq);
     } catch (err) {
-      send({ type: 'load-error', seq: loadSeq, error: String(err && err.message || err) });
+      send({ type: 'load-error', seq: msg.seq, error: String(err && err.message || err) });
     }
   },
 

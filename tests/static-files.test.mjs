@@ -126,6 +126,42 @@ test('offline.html exists and is standalone', () => {
   assert.ok(!/src=|href="(?!#)/.test(html.replace(/<style[\s\S]*<\/style>/, '')), 'no external deps');
 });
 
+test('online/offline listeners are on window, never on navigator', () => {
+  // Regression: navigator is not an EventTarget — navigator.addEventListener
+  // threw a TypeError that killed wireUI() and left the engine stuck on
+  // "Engine: loading…" forever. online/offline fire on window.
+  for (const f of ['src/app.js', 'src/file-handling.js', 'src/engine-client.js', 'sw.js', 'src/engine-worker.js']) {
+    assert.ok(!/navigator\s*\.\s*addEventListener/.test(read(f)), f + ': navigator has no addEventListener');
+  }
+  const app = read('src/app.js');
+  assert.ok(app.includes("window.addEventListener('online'"), 'online listener on window');
+  assert.ok(app.includes("window.addEventListener('offline'"), 'offline listener on window');
+});
+
+test('makeDemoCapture produces a well-formed 4-packet pcap', () => {
+  // Regression: one payload was 13 chars against a fixed 12-byte record
+  // length — Uint8Array.set threw RangeError("source array is too long")
+  // and the demo button silently did nothing. Extract the function and run
+  // it standalone (the app module itself needs a DOM).
+  const src = read('src/app.js');
+  const m = src.match(/function makeDemoCapture\(\) \{[\s\S]*?\n\}/);
+  assert.ok(m, 'makeDemoCapture found');
+  const fn = new Function(m[0] + '; return makeDemoCapture();');
+  const b = fn();
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  assert.equal(dv.getUint32(0, false), 0xa1b2c3d4, 'pcap magic');
+  const PKT = 14 + 20 + 8 + 12;
+  assert.equal(b.length, 24 + 4 * (16 + PKT), 'exactly 4 records');
+  // walk every record: incl_len == orig_len == PKT, no zero-length payloads
+  let o = 24;
+  for (let i = 0; i < 4; i++) {
+    assert.equal(dv.getUint32(o + 8, false), PKT, 'record ' + i + ' incl_len');
+    assert.equal(dv.getUint32(o + 12, false), PKT, 'record ' + i + ' orig_len');
+    o += 16 + PKT;
+  }
+  assert.equal(o, b.length, 'records tile the buffer exactly');
+});
+
 test('.gitignore excludes the wasm engine', () => {
   const gi = read('.gitignore');
   assert.ok(/^wasm\/$/m.test(gi));

@@ -807,8 +807,8 @@ function wireUI() {
       el.className = 'pill warn';
     }
   }
-  navigator.addEventListener('online', updateNet);
-  navigator.addEventListener('offline', updateNet);
+  window.addEventListener('online', updateNet);
+  window.addEventListener('offline', updateNet);
   updateNet();
 
   /* service worker */
@@ -852,7 +852,11 @@ function makeDemoCapture() {
   dv.setUint32(8, 0, false); dv.setUint32(12, 0, false);
   dv.setUint32(16, 65535, false); dv.setUint32(20, 1, false);
   let o = 24;
-  const payloads = ['demo pkt0001', 'demo pkt 0002', 'demo pkt 0003', 'demo pkt 0004'];
+  /* Payloads must be exactly 12 bytes — the record length is fixed at
+   * PKT above; a longer payload makes Uint8Array.set throw RangeError. */
+  const payloads = [0, 1, 2, 3].map(function (i) {
+    return ('demo pkt' + String(i + 1).padStart(4, '0')).slice(0, 12);
+  });
   for (let i = 0; i < N; i++) {
     dv.setUint32(o, 1731674000 + i, false); dv.setUint32(o + 4, 0, false);
     dv.setUint32(o + 8, PKT, false); dv.setUint32(o + 12, PKT, false);
