@@ -31,7 +31,8 @@ When installed, the PWA doubles as a system-level handler for captures.
 Everything is feature-detected; browsers without support keep the dropzone:
 
 - **Open with** (desktop Chrome/Edge): `file_handlers` in
-  `manifest.webmanifest` registers the app for ~35 capture extensions;
+  `manifest.webmanifest` registers the app for 31 capture extensions
+  (`.pcap`, `.pcapng`, `.snoop`, `.erf`, `.pcap.gz`, …);
   launched files arrive via `window.launchQueue` (and are re-stashed into
   OPFS so they survive a reload).
 - **Share sheet** (Android Chrome): `share_target` receives shared files as a
