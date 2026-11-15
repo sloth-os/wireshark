@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Offline — Wireshark WASM</title>
+  <style>
+    :root { color-scheme: dark light; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: #0e1420;
+      color: #dbe4f0;
+    }
+    @media (prefers-color-scheme: light) {
+      body { background: #f4f6f9; color: #1b2029; }
+    }
+    main { max-width: 34rem; margin: 1.5rem; padding: 2rem; text-align: center; }
+    h1 { font-size: 1.3rem; }
+    button {
+      font: inherit;
+      padding: .5rem 1rem;
+      cursor: pointer;
+      border-radius: 8px;
+      border: 1px solid currentColor;
+      background: transparent;
+      color: inherit;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>You are offline</h1>
+    <p>This page was not cached yet. Once you have opened the app once with a
+    network connection, it keeps working offline.</p>
+    <p><button type="button" onclick="location.reload()">Retry</button></p>
+  </main>
+</body>
+</html>

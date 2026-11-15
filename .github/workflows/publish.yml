@@ -1,0 +1,192 @@
+name: Build & Publish Wireshark WASM
+
+on:
+  push:
+    branches: [main]
+    # Files that never reach the deployed site: rebuilding + redeploying on a
+    # docs/tests-only commit would just redeploy byte-identical assets under a
+    # new cache version, spinning clients' caches for nothing. Everything that
+    # ships (or shapes what ships — .github/) still runs.
+    paths-ignore:
+      - 'README.md'
+      - 'tests/**'
+      - '.*'
+  schedule:
+    - cron: '17 4 * * 1' # every Monday 04:17 UTC
+  workflow_dispatch:
+    inputs:
+      wiregasm_version:
+        description: '@goodtools/wiregasm version to publish (empty = latest)'
+        required: false
+        default: ''
+      skip_build:
+        description: 'Skip building (redeploy site with wasm from the latest successful build)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  actions: read # needed to fetch the wasm-build artifact from a previous run (skip_build)
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout site repository
+        uses: actions/checkout@v5
+
+      - name: Configure Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Resolve the wiregasm version
+        id: wiregasm
+        env:
+          INPUT_VERSION: ${{ inputs.wiregasm_version }}
+        run: |
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            version="$INPUT_VERSION"
+          else
+            # The newest release of the engine (Wireshark compiled to wasm).
+            # `npm view` prints the dist-tag; jq is not needed.
+                       version=$(npm view @goodtools/wiregasm version)
+          fi
+          if [ -z "$version" ]; then
+            echo "::error::could not resolve a wiregasm version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Publishing @goodtools/wiregasm@$version"
+
+      - name: Download the wiregasm package
+        if: ${{ !inputs.skip_build }}
+        env:
+          VERSION: ${{ steps.wiregasm.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p wasm/engine
+          npm pack "@goodtools/wiregasm@$VERSION" --pack-destination /tmp
+          tar xzf /tmp/goodtools-wiregasm-*.tgz -C /tmp
+          # The site ships the loader + the gzipped engine assets (21 MB
+          # instead of 74 MB raw; the worker inflates them in-browser).
+          cp /tmp/package/dist/wiregasm.js wasm/engine/
+          cp /tmp/package/dist/wiregasm.wasm.gz wasm/engine/
+          cp /tmp/package/dist/wiregasm.data.gz wasm/engine/
+          cp /tmp/package/LICENSE wasm/engine/LICENSE
+          cp /tmp/package/README.md wasm/engine/README.md
+          ls -la wasm/engine/
+
+      - name: Smoke-test the engine under Node
+        if: ${{ !inputs.skip_build }}
+        run: |
+          set -euo pipefail
+          node .github/scripts/wasm-smoke-test.mjs wasm/engine
+
+      - name: Stage build metadata
+        env:
+          VERSION: ${{ steps.wiregasm.outputs.version }}
+        run: |
+          mkdir -p wasm-stage
+          cp wasm/engine/wiregasm.js wasm/engine/wiregasm.wasm.gz wasm/engine/wiregasm.data.gz wasm-stage/
+          cp wasm/engine/LICENSE wasm/engine/README.md wasm-stage/ 2>/dev/null || true
+          cat > wasm-stage/build-info.json <<EOF
+          {
+            "version": "wiregasm $VERSION",
+            "wiregasm": "$VERSION",
+            "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "source": "npm:@goodtools/wiregasm"
+          }
+          EOF
+          cat wasm-stage/build-info.json
+
+      - name: Upload wasm-build artifact
+        if: ${{ !inputs.skip_build }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-build
+          path: wasm-stage/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Reuse wasm from latest successful build
+        if: ${{ inputs.skip_build }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The latest successful run that actually CARRIES a wasm-build
+          # artifact (a skip_build run reuses instead of uploading, so the
+          # most recent success may itself have been a redeploy).
+          RUN_ID=""
+          for CAND in $(gh run list --workflow=publish.yml --status=success \
+                          --limit 10 --json databaseId --jq '.[].databaseId'); do
+            COUNT=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CAND/artifacts?name=wasm-build" \
+                      --jq '.total_count')
+            if [ "$COUNT" != "0" ]; then RUN_ID="$CAND"; break; fi
+          done
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::skip_build requested but no previous successful run with a wasm-build artifact exists."
+            exit 1
+          fi
+          echo "Reusing wasm-build artifact from run $RUN_ID"
+          rm -rf wasm-stage
+          gh run download "$RUN_ID" --name wasm-build --dir wasm-stage
+          ls -la wasm-stage/
+          cat wasm-stage/build-info.json
+
+      - name: Stage site assets
+        run: |
+          set -euo pipefail
+          # Site files (index.html, src/, icons/, vendor/, ...) live at the
+          # repo root; the engine (fresh or reused) lands in wasm/engine/.
+          rsync -a \
+            --exclude='.github' --exclude='.git' --exclude='.gitignore' \
+            --exclude='README.md' --exclude='tests' --exclude='wasm' \
+            --exclude='wasm-stage' --exclude='site-publish' --exclude='node_modules' \
+            ./ site-publish/
+          mkdir -p site-publish/wasm/engine
+          cp wasm-stage/wiregasm.js wasm-stage/wiregasm.wasm.gz wasm-stage/wiregasm.data.gz site-publish/wasm/engine/
+          cp wasm-stage/LICENSE wasm-stage/README.md site-publish/wasm/engine/ 2>/dev/null || true
+          cp wasm-stage/build-info.json site-publish/
+          echo "--- site-publish ---"
+          find site-publish -type f | sort
+          # The site is a handful of files + the ~21 MB engine. If a CI
+          # working directory ever leaks past the excludes, fail here instead
+          # of uploading junk to Pages.
+          FILES=$(find site-publish -type f | wc -l)
+          SIZE_MB=$(du -sm site-publish | cut -f1)
+          if [ "$FILES" -gt 60 ] || [ "$SIZE_MB" -gt 120 ]; then
+            echo "::error::site-publish looks wrong: $FILES files, ${SIZE_MB} MB (expected <=60 files, <=120 MB)"
+            find site-publish -maxdepth 2 | sort
+            exit 1
+          fi
+
+      - name: Generate service worker asset list
+        run: |
+          node .github/scripts/generate-sw-manifest.mjs site-publish
+          cat site-publish/sw-manifest.js
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site-publish
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

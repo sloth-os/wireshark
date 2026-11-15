@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Wireshark's dissection engine compiled to WebAssembly — open packet captures in your browser: frames, protocol trees, streams, statistics. No uploads, works offline.">
+  <meta name="theme-color" content="#0e1420">
+  <meta name="color-scheme" content="dark light">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="./icons/icon-32.png">
+  <link rel="apple-touch-icon" sizes="192x192" href="./icons/icon-192.png">
+  <title>Wireshark WASM — packet capture analyzer</title>
+  <style>
+    /* ---------- base ---------- */
+    *, *::before, *::after { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+
+    :root {
+      color-scheme: dark light;
+      --bg: #0e1420;
+      --bg-soft: #131b2a;
+      --card: #16202f;
+      --border: #26334a;
+      --fg: #dbe4f0;
+      --muted: #8a97ab;
+      --accent: #00bfff;
+      --accent-soft: rgba(0, 191, 255, 0.12);
+      --accent-fg: #06131d;
+      --error: #ff7a70;
+      --ok: #57d98a;
+      --warn: #ffc46b;
+      --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+      --tree-proto: #7fd7ff;
+      --tree-field: #dbe4f0;
+      --hex-ascii: #8a97ab;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f4f6f9;
+        --bg-soft: #eaeef4;
+        --card: #ffffff;
+        --border: #d3dae5;
+        --fg: #1b2431;
+        --muted: #5c6572;
+        --accent: #0078a7;
+        --accent-soft: rgba(0, 120, 167, 0.10);
+        --accent-fg: #ffffff;
+        --error: #c53030;
+        --ok: #1c7c3f;
+        --warn: #9a6700;
+        --tree-proto: #0b6a99;
+        --tree-field: #1b2431;
+        --hex-ascii: #5c6572;
+      }
+    }
+
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.45;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    ::selection { background: var(--accent); color: var(--accent-fg); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+    button { font: inherit; color: inherit; }
+
+    /* ---------- header ---------- */
+    .site-header {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem 0.75rem;
+      flex-wrap: wrap;
+      padding: 0.55rem 1rem;
+      background: var(--bg-soft);
+      border-bottom: 1px solid var(--border);
+    }
+    .brand { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
+    .brand img { width: 24px; height: 24px; flex: none; }
+    .brand h1 { margin: 0; font-size: 1rem; font-weight: 700; white-space: nowrap; }
+    .brand h1 em { font-style: normal; color: var(--accent); }
+    .header-tools { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-left: auto; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.32rem 0.8rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card);
+      cursor: pointer;
+      white-space: nowrap;
+      font-size: 0.86rem;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+    .btn[disabled] { opacity: 0.5; cursor: default; }
+    .btn-small { padding: 0.2rem 0.6rem; font-size: 0.8rem; border-radius: 6px; }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.22rem 0.65rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg-soft);
+      color: var(--muted);
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+    .pill.good { color: var(--ok); border-color: var(--ok); }
+    .pill.bad { color: var(--error); border-color: var(--error); }
+    .pill.warn { color: var(--warn); border-color: var(--warn); }
+
+    /* ---------- filter bar ---------- */
+    .filter-bar {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 1rem;
+      background: var(--bg-soft);
+      border-bottom: 1px solid var(--border);
+    }
+    .filter-bar label { font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
+    .filter-input-wrap { position: relative; flex: 1; min-width: 8rem; }
+    #filter-input {
+      width: 100%;
+      padding: 0.35rem 2.2rem 0.35rem 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card);
+      color: var(--fg);
+      font-family: var(--mono);
+      font-size: 0.86rem;
+    }
+    #filter-input.invalid { border-color: var(--error); }
+    .filter-status {
+      position: absolute;
+      right: 0.6rem;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.72rem;
+      pointer-events: none;
+    }
+    .filter-status.ok { color: var(--ok); }
+    .filter-status.err { color: var(--error); }
+    #filter-apply { flex: none; }
+
+    /* ---------- dropzone / welcome ---------- */
+    #welcome {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+      overflow: auto;
+    }
+    .welcome-card {
+      max-width: 42rem;
+      text-align: center;
+      border: 2px dashed var(--border);
+      border-radius: 16px;
+      padding: 3rem 2.5rem;
+      background: var(--card);
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .welcome-card.dragging { border-color: var(--accent); background: var(--accent-soft); }
+    .welcome-card h2 { margin: 0 0 0.4rem; font-size: 1.35rem; }
+    .welcome-card p { margin: 0.4rem 0; color: var(--muted); font-size: 0.95rem; }
+    .welcome-card .big-btns { display: flex; gap: 0.6rem; justify-content: center; flex-wrap: wrap; margin-top: 1.2rem; }
+    .welcome-card kbd {
+      font-family: var(--mono);
+      font-size: 0.8em;
+      border: 1px solid var(--border);
+      border-bottom-width: 2px;
+      border-radius: 5px;
+      padding: 0.05em 0.4em;
+      background: var(--bg-soft);
+    }
+    #file-input { display: none; }
+
+    /* ---------- main analysis layout ---------- */
+    #analyzer { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+    .pane-split {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+    }
+    .pane-left {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+    }
+    .pane-right {
+      width: 42%;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    @media (max-width: 900px) {
+      .pane-split { flex-direction: column; overflow: auto; }
+      .pane-left { border-right: none; border-bottom: 1px solid var(--border); min-height: 40vh; }
+      .pane-right { width: auto; min-height: 40vh; }
+      body { overflow: auto; }
+    }
+
+    /* packet list */
+    .packet-list-wrap { flex: 1.2; min-height: 0; display: flex; flex-direction: column; }
+    .list-header {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.35rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-soft);
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .list-header .summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .list-header .actions { margin-left: auto; display: flex; gap: 0.4rem; }
+    #packet-table-wrap { flex: 1; overflow: auto; min-height: 120px; position: relative; }
+    table.packet-list {
+      border-collapse: collapse;
+      width: 100%;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+    }
+    .packet-list th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: var(--bg-soft);
+      text-align: left;
+      padding: 0.3rem 0.55rem;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+    }
+    .packet-list th .arrow { font-size: 0.75em; opacity: 0.7; }
+    .packet-list td {
+      padding: 0.22rem 0.55rem;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 40vw;
+      cursor: default;
+    }
+    .packet-list td.no { text-align: right; color: var(--muted); }
+    .packet-list tr { cursor: pointer; }
+    .packet-list tr:hover td { background: var(--accent-soft); }
+    .packet-list tr.selected td { background: var(--accent); color: var(--accent-fg); }
+    .packet-list tr.selected td.no { color: var(--accent-fg); }
+    .packet-list tr.marked td { background: color-mix(in srgb, var(--warn) 22%, transparent); }
+    .packet-list tr.commented td.no::after { content: " *"; color: var(--accent); }
+
+    /* detail: tree + hex */
+    .detail-split {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .detail-tabs { flex: none; display: flex; gap: 0.25rem; padding: 0.35rem 0.75rem 0; border-bottom: 1px solid var(--border); background: var(--bg-soft); }
+    .detail-tabs button {
+      padding: 0.3rem 0.8rem;
+      border: 1px solid var(--border);
+      border-bottom: none;
+      border-radius: 8px 8px 0 0;
+      background: transparent;
+      cursor: pointer;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+    .detail-tabs button[aria-selected="true"] { background: var(--card); color: var(--fg); border-color: var(--accent); font-weight: 600; }
+    .detail-body { flex: 1; min-height: 0; overflow: auto; background: var(--card); }
+    .detail-body[hidden] { display: none; }
+
+    /* protocol tree */
+    #proto-tree { padding: 0.4rem 0.2rem; font-size: 0.84rem; }
+    #proto-tree ul { list-style: none; margin: 0; padding-left: 1.1rem; }
+    #proto-tree > ul { padding-left: 0.2rem; }
+    #proto-tree li { position: relative; }
+    #proto-tree li .row {
+      display: block;
+      padding: 0.12rem 0.35rem;
+      border-radius: 5px;
+      cursor: default;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #proto-tree li .row:hover { background: var(--accent-soft); }
+    #proto-tree li .row.selected { background: var(--accent); color: var(--accent-fg); }
+    #proto-tree li .row .twisty {
+      display: inline-block;
+      width: 1em;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+    }
+    #proto-tree li.collapsed > ul { display: none; }
+    #proto-tree li.collapsed > .row .twisty::before { content: "▸"; }
+    #proto-tree li:not(.collapsed) > .row .twisty::before { content: "▾"; }
+    #proto-tree li.leaf > .row .twisty::before { content: "·"; opacity: 0.4; }
+    #proto-tree .label-proto { color: var(--tree-proto); font-weight: 600; }
+    #proto-tree .severity-Error .row > .label { color: var(--error); font-weight: 600; }
+    #proto-tree .severity-Warning .row > .label { color: var(--warn); }
+    #proto-tree .filter-hint { color: var(--muted); font-size: 0.78rem; font-family: var(--mono); margin-left: 0.4rem; }
+    #proto-tree .row .apply-filter {
+      visibility: hidden;
+      margin-left: 0.4rem;
+      font-size: 0.72rem;
+      padding: 0 0.35rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg-soft);
+      cursor: pointer;
+    }
+    #proto-tree .row:hover .apply-filter { visibility: visible; }
+
+    /* hex view */
+    #hex-view {
+      padding: 0.5rem 0.75rem;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      line-height: 1.55;
+      white-space: pre;
+      tab-size: 4;
+    }
+    #hex-view .offset { color: var(--muted); margin-right: 0.9em; }
+    #hex-view .hexbytes { margin-right: 1.6em; }
+    #hex-view .ascii { color: var(--hex-ascii); }
+    #hex-view b { color: var(--accent-fg); background: var(--accent); font-weight: 600; border-radius: 3px; padding: 0 1px; }
+    #hex-view .ds-name { color: var(--tree-proto); font-weight: 600; }
+
+    /* ---------- tabs panel: follow / conversations / endpoints / io / eo ---------- */
+    .stats-panel {
+      flex: none;
+      height: 38%;
+      min-height: 8rem;
+      display: flex;
+      flex-direction: column;
+      border-top: 1px solid var(--border);
+      background: var(--bg-soft);
+    }
+    .stats-panel .stats-tabs { display: flex; gap: 0.25rem; padding: 0.35rem 0.75rem 0; border-bottom: 1px solid var(--border); }
+    .stats-panel .stats-tabs button {
+      padding: 0.28rem 0.75rem;
+      border: 1px solid var(--border);
+      border-bottom: none;
+      border-radius: 8px 8px 0 0;
+      background: transparent;
+      cursor: pointer;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .stats-panel .stats-tabs button[aria-selected="true"] { background: var(--card); color: var(--fg); border-color: var(--accent); font-weight: 600; }
+    .stats-body { flex: 1; overflow: auto; background: var(--card); padding: 0.5rem 0.75rem; }
+    .stats-body table { border-collapse: collapse; font-size: 0.8rem; width: 100%; }
+    .stats-body th { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--border); white-space: nowrap; position: sticky; top: 0; background: var(--card); }
+    .stats-body td { padding: 0.2rem 0.5rem; border-bottom: 1px solid var(--border); white-space: nowrap; font-family: var(--mono); cursor: pointer; }
+    .stats-body tr:hover td { background: var(--accent-soft); }
+    .stats-body .empty { color: var(--muted); padding: 1rem 0; text-align: center; }
+    .follow-controls { display: flex; gap: 0.5rem; align-items: center; padding-bottom: 0.4rem; flex-wrap: wrap; }
+    .follow-controls select, .follow-controls input {
+      padding: 0.25rem 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-soft);
+      color: var(--fg);
+      font-size: 0.8rem;
+    }
+    .follow-controls input { font-family: var(--mono); width: 11rem; }
+    #follow-output {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      line-height: 1.5;
+    }
+    #follow-output .srv { color: var(--warn); }
+    #follow-output .cli { color: var(--tree-proto); }
+    .graph-wrap { padding: 0.25rem 0; }
+    .graph-wrap svg { width: 100%; height: auto; display: block; }
+    .graph-wrap .axis { color: var(--muted); font-size: 0.7rem; }
+
+    /* ---------- status line ---------- */
+    .status-line {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.3rem 1rem;
+      border-top: 1px solid var(--border);
+      background: var(--bg-soft);
+      font-size: 0.78rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    .status-line .spacer { flex: 1; }
+    #status-msg.error { color: var(--error); }
+    #status-msg.ok { color: var(--ok); }
+
+    /* ---------- progress overlay ---------- */
+    #progress-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: color-mix(in srgb, var(--bg) 80%, transparent);
+      backdrop-filter: blur(2px);
+    }
+    .progress-card {
+      width: min(30rem, 90vw);
+      padding: 1.6rem 1.8rem;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--card);
+      text-align: center;
+    }
+    .progress-card h2 { margin: 0 0 0.6rem; font-size: 1.1rem; }
+    .progress-card .stage { color: var(--muted); font-size: 0.9rem; min-height: 1.4em; }
+    .progress-bar {
+      height: 8px;
+      border-radius: 999px;
+      background: var(--bg-soft);
+      border: 1px solid var(--border);
+      overflow: hidden;
+      margin: 0.8rem 0 0.4rem;
+    }
+    #progress-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      transition: width 0.2s;
+    }
+    .progress-card .cancel-row { margin-top: 0.8rem; }
+
+    /* ---------- about dialog ---------- */
+    dialog#about {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--card);
+      color: var(--fg);
+      padding: 1.5rem 1.8rem;
+      max-width: 34rem;
+      width: min(34rem, 92vw);
+    }
+    dialog#about::backdrop { background: rgba(0, 0, 0, 0.5); }
+    dialog#about h2 { margin-top: 0; font-size: 1.1rem; }
+    dialog#about p { font-size: 0.9rem; color: var(--muted); }
+    dialog#about dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1rem; font-size: 0.85rem; }
+    dialog#about dt { color: var(--muted); }
+    dialog#about dd { margin: 0; font-family: var(--mono); }
+    dialog#about .close-row { display: flex; justify-content: flex-end; margin-top: 1rem; }
+ dialog#about a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <img src="./icons/icon-32.png" alt="" width="24" height="24">
+      <h1>Wireshark <em>WASM</em></h1>
+    </div>
+    <span class="pill" id="net-status" title="Network status">…</span>
+    <div class="header-tools">
+      <button class="btn" id="btn-open" title="Open a capture file">Open capture…</button>
+      <button class="btn" id="btn-pick" hidden title="Open with the system file picker">Native picker…</button>
+      <button class="btn btn-small" id="btn-about" title="About this app">About</button>
+    </div>
+  </header>
+
+  <!-- welcome / dropzone -->
+  <section id="welcome" aria-label="Open a packet capture">
+    <div class="welcome-card" id="dropzone">
+      <h2>Open a packet capture</h2>
+      <p>Drop a <kbd>.pcap</kbd> / <kbd>.pcapng</kbd> file anywhere on this page,<br>
+ or pick one from your device.</p>
+      <p style="font-size:0.82rem">Everything is dissected locally in your browser by Wireshark's engine
+         compiled to WebAssembly. No uploads. Works offline once loaded.</p>
+      <div class="big-btns">
+        <button class="btn primary" id="btn-open-2">Choose a capture file</button>
+        <button class="btn" id="btn-demo">Load a sample capture</button>
+      </div>
+      <p id="welcome-engine" style="margin-top:1.4rem; font-size:0.8rem">Engine: loading…</p>
+    </div>
+  </section>
+
+  <!-- analyzer -->
+  <main id="analyzer" hidden>
+    <div class="filter-bar">
+      <label for="filter-input">Display filter</label>
+      <div class="filter-input-wrap">
+        <input id="filter-input" type="text" spellcheck="false" autocomplete="off"
+               placeholder="e.g. tcp.port == 80 || dns" aria-label="Display filter">
+        <span class="filter-status" id="filter-status"></span>
+      </div>
+      <button class="btn btn-small" id="filter-apply">Apply</button>
+      <button class="btn btn-small" id="filter-clear" title="Clear the filter">Clear</button>
+    </div>
+
+    <div class="pane-split">
+      <div class="pane-left">
+        <div class="packet-list-wrap">
+          <div class="list-header">
+            <span class="summary" id="capture-summary">—</span>
+            <span class="pill" id="frames-shown">0 / 0</span>
+            <div class="actions">
+              <button class="btn btn-small" id="btn-prev" title="Previous frame (up arrow)">↑</button>
+              <button class="btn btn-small" id="btn-next" title="Next frame (down arrow)">↓</button>
+            </div>
+          </div>
+          <div id="packet-table-wrap">
+            <table class="packet-list" aria-label="Packet list">
+              <thead>
+                <tr id="packet-head-row"><!-- filled from engine columns --></tr>
+              </thead>
+              <tbody id="packet-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="detail-split">
+          <div class="detail-tabs" role="tablist" aria-label="Packet detail">
+            <button role="tab" id="tab-tree" aria-selected="true" aria-controls="proto-tree-panel">Protocol tree</button>
+            <button role="tab" id="tab-hex" aria-selected="false" aria-controls="hex-panel">Bytes (hex)</button>
+          </div>
+          <div class="detail-body" id="proto-tree-panel" role="tabpanel" aria-labelledby="tab-tree">
+            <div id="proto-tree"></div>
+          </div>
+          <div class="detail-body" id="hex-panel" role="tabpanel" aria-labelledby="tab-hex" hidden>
+            <div id="hex-view"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="pane-right">
+        <section class="stats-panel" aria-label="Capture statistics">
+          <div class="stats-tabs" role="tablist" aria-label="Statistics">
+            <button role="tab" data-stats="conversations" aria-selected="true">Conversations</button>
+            <button role="tab" data-stats="endpoints">Endpoints</button>
+            <button role="tab" data-stats="follow">Follow stream</button>
+            <button role="tab" data-stats="iograph">I/O graph</button>
+            <button role="tab" data-stats="objects">Export objects</button>
+          </div>
+          <div class="stats-body" id="stats-body"><!-- tab content --></div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <footer class="status-line">
+    <span id="status-msg">Loading engine…</span>
+    <span class="spacer"></span>
+    <span id="engine-version"></span>
+    <span id="sw-hint" title="The app shell and the engine are cached after first use; offline then works"></span>
+  </footer>
+
+  <!-- engine download progress -->
+  <div id="progress-overlay" hidden>
+    <div class="progress-card" role="status" aria-live="polite">
+      <h2 id="progress-title">Loading Wireshark engine…</h2>
+      <div class="progress-bar"><div id="progress-fill"></div></div>
+      <p class="stage" id="progress-stage">downloading</p>
+      <p class="stage" style="font-size:0.78rem">The engine is ~21 MB (compressed). It is cached by the
+         service worker: this download happens once, offline afterwards.</p>
+    </div>
+  </div>
+
+  <dialog id="about">
+    <h2>Wireshark WASM</h2>
+    <p>This site runs Wireshark's dissection engine — compiled to WebAssembly by
+       <a href="https://github.com/good-tools/wiregasm" target="_blank" rel="noreferrer">wiregasm</a> —
+       entirely in your browser. Captures are never uploaded; everything is dissected locally
+       and the app works offline once the engine has been cached.</p>
+    <dl>
+      <dt>Engine</dt><dd id="about-engine">—</dd>
+      <dt>Wireshark version</dt><dd id="about-ws-version">—</dd>
+      <dt>Build</dt><dd id="about-build">—</dd>
+    </dl>
+    <p style="font-size:0.78rem">Wireshark is a registered trademark of the Wireshark Foundation.
+       This site is an independent deployment of the GPL-licensed engine and is not affiliated
+       with the Wireshark project.</p>
+    <div class="close-row">
+      <button class="btn" id="about-close">Close</button>
+    </div>
+  </dialog>
+
+  <input type="file" id="file-input" accept=".pcap,.pcapng,.cap,.gz,.snoop,.erf,.dmp,.trc,.pcapng.gz,.pcap.gz">
+
+<script type="module" src="./src/app.js"></script>
+</body>
+</html>

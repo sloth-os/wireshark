@@ -1,0 +1,109 @@
+{
+  "name": "Wireshark WASM — packet capture analyzer",
+  "short_name": "Wireshark",
+  "description": "Wireshark's dissection engine compiled to WebAssembly: open packet captures, browse frames, protocol trees, streams and statistics — entirely in your browser, works offline.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0e1420",
+  "theme_color": "#0e1420",
+  "icons": [
+    {
+      "src": "./icons/icon-16.png",
+      "sizes": "16x16",
+      "type": "image/png"
+    },
+    {
+      "src": "./icons/icon-32.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "./icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": {
+        "application/vnd.tcpdump.pcap": [
+          ".pcap",
+          ".cap",
+          ".dmp",
+          ".bfr",
+          ".trc",
+          ".enc",
+          ".tr1",
+          ".snoop",
+          ".5vw",
+          ".apc",
+          ".atm",
+          ".erf",
+          ".eyesdn",
+          ".frd",
+          ".ipfix",
+          ".k12",
+          ".lsap",
+          ".mplog",
+          ".nettl",
+          ".pkts",
+          ".syc",
+          ".tds",
+          ".tpc",
+          ".vwr",
+          ".wpp"
+        ],
+        "application/vnd.tcpdump.pcapng": [
+          ".pcapng",
+          ".csc",
+          ".pkt"
+        ],
+        "application/octet-stream": [
+          ".pcap.gz",
+          ".pcapng.gz",
+          ".cap.gz"
+        ]
+      },
+      "launch_type": "multiple-clients"
+    }
+  ],
+  "share_target": {
+    "action": "./__share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "files",
+          "accept": [
+            "*/*"
+          ]
+        }
+      ]
+    }
+  }
+}
